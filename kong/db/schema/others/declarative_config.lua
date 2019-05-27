@@ -326,7 +326,7 @@ local function validate_references(self, input)
 
   populate_references(input, self.known_entities, by_id, by_key, expected)
 
-  local errors = {}
+  local errs = {}
 
   for a, as in pairs(expected) do
     for b, bs in pairs(as) do
@@ -334,18 +334,18 @@ local function validate_references(self, input)
         local found = find_entity(k.value, b, by_key, by_id)
 
         if not found then
-          errors[a] = errors[a] or {}
-          errors[a][k.at] = errors[a][k.at] or {}
+          errs[a] = errs[a] or {}
+          errs[a][k.at] = errs[a][k.at] or {}
           local msg = "invalid reference '" .. k.key .. ": " .. k.value ..
                       "' (no such entry in '" .. b .. "')"
-          table.insert(errors[a][k.at], msg)
+          table.insert(errs[a][k.at], msg)
         end
       end
     end
   end
 
-  if next(errors) then
-    return nil, errors
+  if next(errs) then
+    return nil, errs
   end
 
   return by_id, by_key
