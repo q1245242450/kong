@@ -239,13 +239,11 @@ local function load_plugin_subschemas(fields, plugin_set, indent)
 end
 
 
-local function populate_references(input, known_entities, by_id, by_key, expected, parent_entity)
+local function traverse_nested(input, known_entities, order, parent_entity, fn)
   for _, entity in ipairs(known_entities) do
     if type(input[entity]) ~= "table" then
       goto continue
     end
-
-    local foreign_refs = foreign_references[entity]
 
     local parent_fk
     local child_key
@@ -258,46 +256,60 @@ local function populate_references(input, known_entities, by_id, by_key, expecte
       child_key = foreign_children[parent_entity][entity]
     end
 
-    local entity_schema = all_schemas[entity]
     for i, item in ipairs(input[entity]) do
-
-      populate_references(item, known_entities, by_id, by_key, expected, entity)
-
-      local item_id = DeclarativeConfig.pk_string(entity_schema, item)
-      by_id[entity] = by_id[entity] or {}
-      by_id[entity][item_id] = item
-
-      local key
-      if entity_schema.endpoint_key then
-        key = item[entity_schema.endpoint_key]
-        if key then
-          by_key[entity] = by_key[entity] or {}
-          by_key[entity][key] = item
-        end
+      if order == "pre" then
+        fn(entity, item, i, parent_fk, child_key)
       end
-
-      if foreign_refs then
-        for k, v in pairs(item) do
-          local ref = foreign_refs[k]
-          if ref and v ~= null then
-            expected[entity] = expected[entity] or {}
-            expected[entity][ref] = expected[entity][ref] or {}
-            table.insert(expected[entity][ref], {
-              key = k,
-              value = v,
-              at = key or item_id or i
-            })
-          end
-        end
-      end
-
-      if parent_fk then
-        item[child_key] = utils.deep_copy(parent_fk, false)
+      traverse_nested(item, known_entities, order, entity, fn)
+      if order == "post" then
+        fn(entity, item, i, parent_fk, child_key)
       end
     end
 
     ::continue::
   end
+end
+
+
+local function populate_references(input, known_entities, by_id, by_key, expected)
+  traverse_nested(input, known_entities, "post", nil,
+                  function(entity, item, i, parent_fk, child_key)
+
+    local entity_schema = all_schemas[entity]
+    local foreign_refs = foreign_references[entity]
+
+    local item_id = DeclarativeConfig.pk_string(entity_schema, item)
+    by_id[entity] = by_id[entity] or {}
+    by_id[entity][item_id] = item
+
+    local key
+    if entity_schema.endpoint_key then
+      key = item[entity_schema.endpoint_key]
+      if key then
+        by_key[entity] = by_key[entity] or {}
+        by_key[entity][key] = item
+      end
+    end
+
+    if foreign_refs then
+      for k, v in pairs(item) do
+        local ref = foreign_refs[k]
+        if ref and v ~= null then
+          expected[entity] = expected[entity] or {}
+          expected[entity][ref] = expected[entity][ref] or {}
+          table.insert(expected[entity][ref], {
+            key = k,
+            value = v,
+            at = key or item_id or i
+          })
+        end
+      end
+    end
+
+    if parent_fk then
+      item[child_key] = utils.deep_copy(parent_fk, false)
+    end
+  end)
 end
 
 
@@ -392,55 +404,37 @@ local function generate_uuid(namespace, name)
 end
 
 
-local function generate_ids(input, known_entities, parent_entity)
-  for _, entity in ipairs(known_entities) do
-    if type(input[entity]) ~= "table" then
-      goto continue
-    end
+local function generate_ids(input, known_entities)
+  traverse_nested(input, known_entities, "pre", nil,
+                  function(entity, item, _, parent_fk, child_key)
 
-    local parent_fk
-    local child_key
-    if parent_entity then
-      local parent_schema = all_schemas[parent_entity]
-      if parent_schema.fields[entity] then
-        goto continue
-      end
-      parent_fk = parent_schema:extract_pk_values(input)
-      child_key = foreign_children[parent_entity][entity]
-    end
+    local schema = all_schemas[entity]
 
-    local entity_schema = all_schemas[entity]
-    for _, item in ipairs(input[entity]) do
+    -- if entity schema has a non-composite PK
+    if #schema.primary_key == 1 then
+      local pk_name = schema.primary_key[1]
+      -- If this PK is a UUID and it is not set
+      if schema.fields[pk_name].uuid == true and
+         item[pk_name] == nil then
 
-      local key
-      -- if entity schema has a non-composite PK
-      if #entity_schema.primary_key == 1 then
-        local pk_name = entity_schema.primary_key[1]
-        -- If this PK is a UUID and it is not set
-        if entity_schema.fields[pk_name].uuid == true and
-           item[pk_name] == nil then
-          -- if endpoint_key is defined and is set
-          if entity_schema.endpoint_key and
-             item[entity_schema.endpoint_key] ~= nil then
-            -- generate a PK based on the endpoint_key
-            key = item[entity_schema.endpoint_key]
+        local key
+        -- if endpoint_key is defined and is set
+        if schema.endpoint_key and
+           item[schema.endpoint_key] then
+          -- generate a PK based on the endpoint_key
+          key = item[schema.endpoint_key]
 
-          elseif entity_schema.cache_key then
-            key = build_cache_key(entity, item, entity_schema, parent_fk, child_key)
-          end
+        elseif schema.cache_key then
+          key = build_cache_key(entity, item, schema, parent_fk, child_key)
         end
 
         if key then
-          item[pk_name] = generate_uuid(entity_schema.name, key)
+          item[pk_name] = generate_uuid(schema.name, key)
         end
       end
-
-      generate_ids(item, known_entities, entity)
-
     end
 
-    ::continue::
-  end
+  end)
 end
 
 
