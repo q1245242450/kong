@@ -28,6 +28,74 @@ local function generate_init()
 end
 
 
+local function parse_file(conf, filename)
+  local dc, err = declarative.new_config(conf)
+  if not dc then
+    error(err)
+  end
+
+  local dc_table, err, _, vers = dc:parse_file(filename, accepted_formats)
+  if not dc_table then
+    error("Failed parsing:\n" .. err)
+  end
+
+  return dc_table, vers
+end
+
+
+local cmds = {
+  parse = function(conf, filename)
+    parse_file(conf, filename)
+
+    log("parse successful")
+
+    os.exit(0)
+  end,
+
+  db_import = function(conf, filename)
+    if conf.database == "off" then
+      error("'kong config db_import' only works with a database.\n" ..
+            "When using database=off, reload your declarative configuration\n" ..
+            "using the /config endpoint or use 'kong reload' to\n" ..
+            "reload the file set in the 'declarative_config' property.\n")
+    end
+
+    local dc_table, vers = parse_file(conf, filename)
+
+    log("parse successful, beginning import")
+
+    _G.kong = kong_global.new()
+    kong_global.init_pdk(_G.kong, conf, nil) -- nil: latest PDK
+
+    local db = assert(DB.new(conf))
+    assert(db:init_connector())
+    assert(db:connect())
+    assert(db.plugins:load_plugin_schemas(conf.loaded_plugins))
+
+    _G.kong.db = db
+
+    local ok, err = declarative.load_into_db(dc_table)
+    if not ok then
+      error("Failed importing:\n" .. err)
+    end
+
+    log("import successful")
+
+    -- send anonymous report if reporting is not disabled
+    if conf.anonymous_reports then
+      local kong_reports = require "kong.reports"
+      kong_reports.configure_ping(conf)
+      kong_reports.toggle(true)
+
+      local report = { decl_fmt_version = vers }
+      kong_reports.send("config-db-import", report)
+    end
+
+    os.exit(0)
+  end,
+}
+
+
 local function execute(args)
   if args.command == "init" then
     generate_init()
@@ -46,69 +114,15 @@ local function execute(args)
     conf = assert(conf_loader(conf.kong_env))
   end
 
-  if args.command == "db-import" then
-    args.command = "db_import"
-  end
-
-  if args.command == "db_import" and conf.database == "off" then
-    error("'kong config db_import' only works with a database.\n" ..
-          "When using database=off, reload your declarative configuration\n" ..
-          "using the /config endpoint.")
-  end
-
   package.path = conf.lua_package_path .. ";" .. package.path
 
-  local dc, err = declarative.new_config(conf)
-  if not dc then
-    error(err)
+  local filename = args[1]
+  if not filename then
+    error("expected a declarative configuration file; see `kong config --help`")
   end
 
-  if args.command == "db_import" or args.command == "parse" then
-    local filename = args[1]
-    if not filename then
-      error("expected a declarative configuration file; see `kong config --help`")
-    end
-
-    local dc_table, err, _, vers = dc:parse_file(filename, accepted_formats)
-    if not dc_table then
-      error("Failed parsing:\n" .. err)
-    end
-
-    if args.command == "db_import" then
-      log("parse successful, beginning import")
-
-      _G.kong = kong_global.new()
-      kong_global.init_pdk(_G.kong, conf, nil) -- nil: latest PDK
-
-      local db = assert(DB.new(conf))
-      assert(db:init_connector())
-      assert(db:connect())
-      assert(db.plugins:load_plugin_schemas(conf.loaded_plugins))
-
-      _G.kong.db = db
-
-      local ok, err = declarative.load_into_db(dc_table)
-      if not ok then
-        error("Failed importing:\n" .. err)
-      end
-
-      log("import successful")
-
-      -- send anonymous report if reporting is not disabled
-      if conf.anonymous_reports then
-        local kong_reports = require "kong.reports"
-        kong_reports.configure_ping(conf)
-        kong_reports.toggle(true)
-
-        local report = { decl_fmt_version = vers }
-        kong_reports.send("config-db-import", report)
-      end
-
-    else -- parse
-      log("parse successful")
-    end
-
-    os.exit(0)
+  if cmds[args.command] then
+    return cmds[args.command](conf, filename)
   end
 
   error("unknown command '" .. args.command .. "'")
