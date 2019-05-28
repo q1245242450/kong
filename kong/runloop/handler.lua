@@ -722,20 +722,27 @@ local function balancer_setup_stage1(ctx, match_t, host_type, host, port,
     -- balancer_handle = nil,   -- balancer handle for the current connection
     uri = {                     -- components for upstream uri construction
       strip_path       = route.strip_path,
-      upstream_prefix  = service.path,
       upstream_postfix = match_t.upstream_uri_postfix,
-      downstream_match = var.request_uri:sub(1, #var.request_uri -
-                                                #(match_t.upstream_uri_postfix or "")),
-    },
+    }
   }
+
+  do
+    local request_uri = var.request_uri
+
+    if request_uri then
+      balancer_data.uri.downstream_match =
+        request_uri:sub(1, #request_uri - #(match_t.upstream_uri_postfix or ""))
+    end
+  end
 
   do
     local s = service or EMPTY_T
 
-    balancer_data.retries         = s.retries         or 5
-    balancer_data.connect_timeout = s.connect_timeout or 60000
-    balancer_data.send_timeout    = s.write_timeout   or 60000
-    balancer_data.read_timeout    = s.read_timeout    or 60000
+    balancer_data.retries             = s.retries         or 5
+    balancer_data.connect_timeout     = s.connect_timeout or 60000
+    balancer_data.send_timeout        = s.write_timeout   or 60000
+    balancer_data.read_timeout        = s.read_timeout    or 60000
+    balancer_data.uri.upstream_prefix = s.path
   end
 
   ctx.service          = service
@@ -1012,7 +1019,7 @@ return {
         upstream_url_t.port = tonumber(var.server_port, 10)
       end
 
-      balancer_setup_stage1(ctx, match_t.upstream_scheme,
+      balancer_setup_stage1(ctx, match_t,
                             upstream_url_t.type,
                             upstream_url_t.host,
                             upstream_url_t.port,
